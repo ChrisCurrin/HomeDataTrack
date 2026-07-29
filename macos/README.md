@@ -191,7 +191,7 @@ identically whether or not you later install Xcode.
 
 ## Relationship to the original HomeDataTrack
 
-The Python at the repository root polls a Telkom web portal for the usage figure
-the *carrier* reports. This measures the same quantity from the opposite end —
-what the Mac actually sent and received — which is what you need to catch a
-runaway download while it is happening rather than the next day.
+The archived Python in [`../legacy`](../legacy) polled a Telkom web portal for the
+usage figure the *carrier* reports. This measures the same quantity from the
+opposite end — what the Mac actually sent and received — which is what you need
+to catch a runaway download while it is happening rather than the next day.

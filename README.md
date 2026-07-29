@@ -23,14 +23,15 @@ so a 6 GB background update gets named rather than merely noticed.
 See [`macos/README.md`](macos/README.md) for install, and for the details of what
 macOS will and will not tell you.
 
-## `DataTrack.py` — the original (2016)
+## [`legacy/`](legacy) — the original (2016), archived
 
-Polls a Telkom web portal with PyQt4 and pushes the figures the *carrier* reports
-into Firebase. Historical and unmaintained; PyQt4 no longer installs cleanly.
+`DataTrack.py` polled a Telkom web portal with PyQt4 and pushed the figures the
+*carrier* reported into Firebase. Archived and no longer runnable: PyQt4 and
+QtWebKit are gone, and Firebase's legacy database secrets were retired.
 
-Repeatedly polling a website using PyQt at time intervals seemed novel at the
-time. Connection properties lived in an excluded `config.py`.
-
-It measures the same quantity from the opposite end. The carrier's number is
+It measured the same quantity from the opposite end. The carrier's number is
 authoritative for billing but arrives late; the Mac's own counters are immediate,
 which is what you need to catch a runaway download while it is still running.
+
+See [`legacy/README.md`](legacy/README.md) for what it did and why it stopped
+working.
