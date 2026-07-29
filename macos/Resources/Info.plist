@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>DataTrackMenuBar</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.chriscurrin.datatrack.menubar</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>DataTrack</string>
+	<key>CFBundleDisplayName</key>
+	<string>DataTrack</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+
+	<!-- Menu bar only: no Dock icon, no main window. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- Reading the Wi-Fi network name is gated behind Location Services on
+	     modern macOS. Without this the app still works; networks are keyed on
+	     their gateway MAC and can be named by hand. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>DataTrack uses your location permission only to read the name of the Wi-Fi network you are connected to, so it can label data usage per network. Your location is never stored or transmitted.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>DataTrack uses your location permission only to read the name of the Wi-Fi network you are connected to, so it can label data usage per network. Your location is never stored or transmitted.</string>
+</dict>
+</plist>
