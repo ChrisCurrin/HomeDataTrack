@@ -218,6 +218,66 @@ public final class Store {
         return id
     }
 
+    /// Resolves an identity to a network row, recovering from a transient failure
+    /// to read the gateway MAC.
+    ///
+    /// Without a MAC, `NetworkIdentity.fingerprint` degrades to `subnet:…`, which
+    /// would mint a second record for a network already known under `gw:…`. That
+    /// is not merely untidy: the sampler stores the resolved id on the counter
+    /// baseline, so the *next* interval gets credited to the phantom and the real
+    /// network's budget check is skipped for that tick.
+    ///
+    /// If we saw a fully-identified network on the same interface, with the same
+    /// subnet and the same gateway IP, within `staleness`, this is overwhelmingly
+    /// that network with a missed ARP read rather than a different one. Matching
+    /// on subnet alone would be unsafe — 192.168.1.0/24 is shared by half the
+    /// routers on earth — so recency and gateway IP carry the decision.
+    @discardableResult
+    public func resolveNetwork(
+        _ identity: NetworkIdentity,
+        now: Date = Date(),
+        staleness: TimeInterval = 600
+    ) throws -> Int64 {
+        if identity.gatewayMAC == nil,
+           let subnet = identity.subnet,
+           let gatewayIP = identity.gatewayIP,
+           let recent = try recentIdentifiedNetwork(
+               interface: identity.interface, subnet: subnet, gatewayIP: gatewayIP,
+               since: now.addingTimeInterval(-staleness)
+           )
+        {
+            try run("UPDATE networks SET last_seen = ? WHERE id = ?", [.text(Self.iso(now)), .int(recent)])
+            return recent
+        }
+        return try upsertNetwork(identity, now: now)
+    }
+
+    /// Most recently seen network with a known gateway MAC matching this
+    /// interface, subnet and gateway IP.
+    func recentIdentifiedNetwork(interface: String, subnet: String, gatewayIP: String, since: Date) throws -> Int64? {
+        try query(
+            """
+            SELECT id FROM networks
+            WHERE interface = ? AND subnet = ? AND gateway_ip = ?
+              AND gateway_mac IS NOT NULL AND last_seen >= ?
+            ORDER BY last_seen DESC LIMIT 1
+            """,
+            [.text(interface), .text(subnet), .text(gatewayIP), .text(Self.iso(since))]
+        ) { $0.int64(0) }.first
+    }
+
+    /// Timestamp of the most recent sampling tick, or nil if none has run.
+    ///
+    /// Read from `counter_state`, which every tick rewrites. This is how the tool
+    /// detects that it has stopped measuring — a frozen number that looks current
+    /// is the most dangerous output this app can produce.
+    public func lastSampleAt() throws -> Date? {
+        try query("SELECT MAX(updated) FROM counter_state", []) { row in row.string(0) }
+            .compactMap { $0 }
+            .first
+            .map { Self.date($0) }
+    }
+
     public func networks() throws -> [NetworkRecord] {
         try query(
             """

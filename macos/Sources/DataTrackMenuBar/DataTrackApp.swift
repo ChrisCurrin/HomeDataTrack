@@ -41,6 +41,7 @@ final class UsageModel: ObservableObject {
     @Published var otherNetworks: [(record: NetworkRecord, today: UInt64)] = []
     @Published var errorMessage: String?
     @Published var samplingInProcess = false
+    @Published var freshness: SampleFreshness.State = .neverSampled
 
     private var store: Store?
     private var sampler: Sampler?
@@ -56,12 +57,20 @@ final class UsageModel: ObservableObject {
         return min(1.0, Double(budgetUsed) / Double(limit))
     }
 
+    var isStalled: Bool {
+        if case .stalled = freshness { return true }
+        return false
+    }
+
     var menuBarTitle: String {
+        // Mark a stale reading in the menu bar itself. Showing a frozen figure
+        // that looks live would defeat the point of the app.
+        let prefix = isStalled ? "⚠︎ " : ""
         if let fraction = budgetFraction {
             let percent = Int((fraction * 100).rounded())
-            return "\(percent > 99 ? "⚠︎ " : "")\(percent)%"
+            return "\(percent > 99 && !isStalled ? "⚠︎ " : prefix)\(percent)%"
         }
-        return ByteFormat.string(todayTotal)
+        return prefix + ByteFormat.string(todayTotal)
     }
 
     init() {
@@ -108,7 +117,7 @@ final class UsageModel: ObservableObject {
                 return
             }
 
-            let id = try store.upsertNetwork(identity)
+            let id = try store.resolveNetwork(identity)
             currentNetworkID = id
             let record = try store.network(id: id)
 
@@ -133,6 +142,7 @@ final class UsageModel: ObservableObject {
                 budgetUsed = 0
             }
 
+            freshness = SampleFreshness.state(lastSample: try store.lastSampleAt())
             topProcesses = try store.topProcesses(networkID: id, fromDay: today, toDay: today, limit: 5)
 
             otherNetworks = try store.networks()
@@ -185,6 +195,7 @@ struct MenuContent: View {
         VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
+            if model.isStalled { stalledBanner }
             todaySection
             if model.budgetFraction != nil { budgetSection } else { budgetEntry }
             if !model.topProcesses.isEmpty {
@@ -222,6 +233,30 @@ struct MenuContent: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Shown when sampling has stopped. The figures below are then a floor rather
+    /// than a total, and saying so is the whole point.
+    private var stalledBanner: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.system(size: 11))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Not sampling").font(.caption.weight(.semibold))
+                Text({
+                    if case let .stalled(age) = model.freshness {
+                        return "Last reading \(SampleFreshness.ago(age)) ago. Totals below are stale."
+                    }
+                    return "Totals below are stale."
+                }())
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
     private var todaySection: some View {

@@ -498,6 +498,55 @@ E.suite("store") {
         E.equal(try store.usage(networkID: id, fromDay: key, toDay: key).bytesIn, 5_000, "network totals intact")
     }
 
+    E.test("a transient ARP miss reuses the network instead of minting a phantom") {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Fully identified on the first sighting.
+        let real = try store.resolveNetwork(identity(mac: "aa:bb:cc:dd:ee:ff", ssid: "Cafe"))
+        // Next tick, the ARP read fails: same interface, subnet and gateway IP,
+        // but no MAC, so the fingerprint would degrade to subnet:…
+        let afterMiss = try store.resolveNetwork(identity(mac: nil))
+
+        E.equal(afterMiss, real, "must resolve to the same network")
+        E.equal(try store.networks().count, 1, "no phantom row created")
+    }
+
+    E.test("a genuinely different network is not merged onto a stale match") {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let old = try store.resolveNetwork(identity(mac: "aa:bb:cc:dd:ee:ff"), now: Date().addingTimeInterval(-7200))
+        // Same private subnet hours later with no MAC. 192.168.1.0/24 is shared by
+        // half the routers on earth, so recency has to gate the recovery.
+        let now = try store.resolveNetwork(identity(mac: nil), now: Date(), staleness: 600)
+        E.expect(old != now, "stale match must not be reused")
+        E.equal(try store.networks().count, 2, "distinct records")
+    }
+
+    E.test("recovery requires a known gateway MAC on the match") {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        // Only ever seen without a MAC: there is nothing trustworthy to recover
+        // onto, so the subnet-keyed record stands rather than chaining guesses.
+        let first = try store.resolveNetwork(identity(mac: nil))
+        let second = try store.resolveNetwork(identity(mac: nil))
+        E.equal(first, second, "stable subnet fingerprint")
+        E.equal(try store.networks().count, 1, "one record")
+    }
+
+    E.test("last sample time reflects the newest counter baseline") {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        E.equal(try store.lastSampleAt(), nil, "nothing sampled yet")
+
+        let id = try store.upsertNetwork(identity())
+        let when = Date(timeIntervalSince1970: 1_800_000_000)
+        try store.setCounterBaseline(interface: "en0", bytesIn: 1, bytesOut: 1, networkID: id, now: when)
+        guard let last = try store.lastSampleAt() else { E.record("expected a timestamp"); return }
+        E.expect(abs(last.timeIntervalSince(when)) < 1.5, "round-trips the sample time")
+    }
+
     E.test("process usage aggregates and ranks") {
         let (store, url) = try makeStore()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -551,6 +600,78 @@ E.suite("budget cycles") {
 }
 
 // MARK: - AppleScript escaping
+
+E.suite("shell") {
+    E.test("REGRESSION: repeated invocations must not leak file descriptors") {
+        // The original leak: Pipe ends were never closed explicitly. A long-lived
+        // agent accumulated 2 553 open PIPE descriptors in ~90 minutes, hit its
+        // limit, could no longer spawn netstat, and failed every tick while still
+        // appearing to run.
+        _ = try Shell.run("/bin/echo", ["warmup"])  // let one-time allocations settle
+        let before = Shell.openFileDescriptorCount()
+        for _ in 0..<150 {
+            _ = try Shell.run("/bin/echo", ["x"])
+        }
+        let after = Shell.openFileDescriptorCount()
+        E.expect(before > 0, "descriptor count is readable (got \(before))")
+        // Allow a little slack for runtime bookkeeping; the leak grew by 2 per call.
+        E.expect(after - before < 20, "descriptors grew by \(after - before) over 150 calls (before=\(before), after=\(after))")
+    }
+
+    E.test("captures stdout and a non-zero status") {
+        let ok = try Shell.run("/bin/echo", ["hello"])
+        E.equal(ok.status, 0)
+        E.equal(ok.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "hello")
+        E.expect(!ok.timedOut, "did not time out")
+
+        let bad = try Shell.run("/bin/sh", ["-c", "exit 3"])
+        E.equal(bad.status, 3, "propagates exit status")
+    }
+
+    E.test("output larger than a pipe buffer does not deadlock") {
+        // Reading the two pipes in sequence would hang here.
+        let result = try Shell.run("/bin/sh", ["-c", "seq 1 200000"], timeout: 30)
+        E.equal(result.status, 0)
+        E.expect(result.stdout.count > 500_000, "got \(result.stdout.count) bytes")
+    }
+
+    E.test("a hung child is killed and reported rather than blocking forever") {
+        let started = Date()
+        let result = try Shell.run("/bin/sh", ["-c", "sleep 30"], timeout: 2)
+        E.expect(result.timedOut, "flagged as timed out")
+        E.expect(Date().timeIntervalSince(started) < 15, "returned promptly (took \(Int(Date().timeIntervalSince(started)))s)")
+    }
+}
+
+E.suite("sample freshness") {
+    E.test("no reading at all is reported as never sampled") {
+        E.equal(SampleFreshness.state(lastSample: nil), .neverSampled)
+    }
+
+    E.test("a recent reading is fresh") {
+        let now = Date()
+        E.equal(SampleFreshness.state(lastSample: now.addingTimeInterval(-15), now: now), .fresh(age: 15))
+    }
+
+    E.test("a reading older than the threshold is stalled") {
+        // The number would otherwise sit there looking current while the agent is
+        // dead — the failure mode this exists to expose.
+        let now = Date()
+        E.equal(SampleFreshness.state(lastSample: now.addingTimeInterval(-600), now: now), .stalled(age: 600))
+    }
+
+    E.test("a clock skewed into the future does not read as ancient") {
+        let now = Date()
+        E.equal(SampleFreshness.state(lastSample: now.addingTimeInterval(300), now: now), .fresh(age: 0))
+    }
+
+    E.test("ages render compactly") {
+        E.equal(SampleFreshness.ago(6), "6s")
+        E.equal(SampleFreshness.ago(240), "4m")
+        E.equal(SampleFreshness.ago(10_800), "3h")
+        E.equal(SampleFreshness.ago(172_800), "2d")
+    }
+}
 
 E.suite("AppleScript escaping") {
     E.test("a network name cannot break out of the script literal") {

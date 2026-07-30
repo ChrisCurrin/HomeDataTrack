@@ -54,7 +54,7 @@ func resolveNetwork(_ token: String?, store: Store) throws -> NetworkRecord {
         guard let identity = NetworkIdentityReader.current() else {
             throw CLIError("not connected to any network")
         }
-        let id = try store.upsertNetwork(identity)
+        let id = try store.resolveNetwork(identity)
         guard let record = try store.network(id: id) else { throw CLIError("could not resolve current network") }
         return record
     }
@@ -102,7 +102,7 @@ func commandStatus(store: Store) throws {
         print("Offline — no default route.")
         return
     }
-    let id = try store.upsertNetwork(identity)
+    let id = try store.resolveNetwork(identity)
     guard let record = try store.network(id: id) else { throw CLIError("could not resolve current network") }
 
     let today = Store.dayKey(Date())
@@ -119,6 +119,17 @@ func commandStatus(store: Store) throws {
     print("")
     print("Today")
     print("  ↓ \(ByteFormat.string(todayUsage.bytesIn))   ↑ \(ByteFormat.string(todayUsage.bytesOut))   total \(ByteFormat.string(todayUsage.bytesIn &+ todayUsage.bytesOut))")
+
+    // A frozen total that looks current is the worst thing this tool can show.
+    switch SampleFreshness.state(lastSample: try store.lastSampleAt()) {
+    case .neverSampled:
+        print("  ⚠︎ nothing has been sampled yet — run `datatrack watch` or install the agent")
+    case let .stalled(age):
+        print("  ⚠︎ NOT SAMPLING — last reading \(SampleFreshness.ago(age)) ago. This total is stale.")
+        print("     Check: launchctl print gui/$(id -u)/com.chriscurrin.datatrack")
+    case let .fresh(age):
+        print("  last sampled \(SampleFreshness.ago(age)) ago")
+    }
 
     if let line = try budgetLine(store: store, network: record) {
         print("")
@@ -311,6 +322,24 @@ func commandDoctor(store: Store) throws {
     let agentPath = ("~/Library/LaunchAgents/com.chriscurrin.datatrack.plist" as NSString).expandingTildeInPath
     let agentInstalled = FileManager.default.fileExists(atPath: agentPath)
     print("  launchd agent        \(agentInstalled ? "installed" : "not installed — run Scripts/install-agent.sh")")
+
+    // Installed is not the same as running, and running is not the same as
+    // sampling. Report all three, because only the last one actually matters.
+    if agentInstalled {
+        let label = "gui/\(getuid())/com.chriscurrin.datatrack"
+        let printed = try? Shell.run("/bin/launchctl", ["print", label], timeout: 10)
+        let running = (printed?.status == 0) && (printed?.stdout.contains("state = running") ?? false)
+        print("  agent process        \(running ? "running" : "NOT RUNNING — launchctl kickstart -k \(label)")")
+    }
+
+    switch SampleFreshness.state(lastSample: try store.lastSampleAt()) {
+    case .neverSampled:
+        print("  sampling             never — no reading has been taken")
+    case let .stalled(age):
+        print("  sampling             STALLED — last reading \(SampleFreshness.ago(age)) ago")
+    case let .fresh(age):
+        print("  sampling             OK — last reading \(SampleFreshness.ago(age)) ago")
+    }
 }
 
 func commandSelfTest() throws {

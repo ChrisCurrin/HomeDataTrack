@@ -75,6 +75,7 @@ public final class Sampler {
     private let store: Store
     private let config: SamplerConfig
     private var lastProcessSampleAt: Date?
+    private var consecutiveFailures = 0
 
     public init(store: Store, config: SamplerConfig = SamplerConfig()) {
         self.store = store
@@ -88,7 +89,10 @@ public final class Sampler {
             return TickResult(kind: .offline, network: nil, bytesIn: 0, bytesOut: 0, note: "no default route")
         }
 
-        let networkID = try store.upsertNetwork(identity, now: now)
+        // resolveNetwork, not upsertNetwork: a transient ARP miss must not mint a
+        // second record for the network we are already on, because this id is
+        // written to the counter baseline and would misattribute the next interval.
+        let networkID = try store.resolveNetwork(identity, now: now)
         let counters = try InterfaceCounters.read()
         guard let counter = counters[identity.interface] else {
             return TickResult(kind: .offline, network: identity.inferredName, bytesIn: 0, bytesOut: 0,
@@ -230,10 +234,25 @@ public final class Sampler {
                 case .offline:
                     break
                 }
+                consecutiveFailures = 0
             } catch {
                 // A transient failure (netstat killed, database locked) must not
-                // take down a long-running agent.
-                log("tick failed: \(error)")
+                // take down a long-running agent. A *persistent* one is a dead
+                // tool, so escalate rather than emitting the same line forever:
+                // this is how an agent that had leaked its file descriptors sat
+                // failing every tick for fourteen minutes without complaint.
+                consecutiveFailures += 1
+                if consecutiveFailures == 1 || consecutiveFailures % 20 == 0 {
+                    log("tick failed (\(consecutiveFailures) in a row): \(error)")
+                    if consecutiveFailures >= 20 {
+                        log("NOT RECORDING — \(consecutiveFailures) consecutive failures, \(Shell.openFileDescriptorCount()) open descriptors")
+                        Notifier.notify(
+                            title: "DataTrack has stopped measuring",
+                            subtitle: "\(consecutiveFailures) failed samples in a row",
+                            message: "Usage totals are no longer being updated. Run `datatrack doctor`."
+                        )
+                    }
+                }
             }
             Thread.sleep(forTimeInterval: config.pollInterval)
         }

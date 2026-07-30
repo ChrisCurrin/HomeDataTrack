@@ -162,6 +162,11 @@ tell you if the column mapping ever drifts on a future macOS.
 
   The network total itself is unaffected by all of this — it comes from `netstat`,
   and budgets and alerts are computed from it, not from process attribution.
+- **It tells you when it has stopped measuring.** A tool like this fails worst by
+  freezing a number that looks current, so `datatrack status`, `datatrack doctor`
+  and the menu bar all report how long ago the last reading was and warn once
+  sampling has stalled. `doctor` distinguishes the three states that actually
+  differ: agent installed, agent running, and agent *sampling*.
 - **This measures, it does not enforce.** It will not block traffic. To actually
   stop macOS from downloading updates over a hotspot, turn on **Low Data Mode**
   for that network (System Settings → Wi-Fi → Details → Low Data Mode). When it

@@ -146,13 +146,20 @@ public enum NetworkIdentityReader {
 
     /// Resolves a gateway IP to its hardware address.
     ///
-    /// The ARP cache may not hold the entry yet, so on a miss we provoke one
-    /// round trip to the gateway and look again. The ping is to the local router
-    /// only and costs a single packet.
+    /// The ARP cache may not hold the entry yet, so on a miss we provoke a round
+    /// trip to the gateway and look again. Pings go to the local router only and
+    /// cost one packet each.
+    ///
+    /// Worth retrying rather than giving up: without a MAC the network's identity
+    /// degrades to its subnet, which is not a reliable key — a transient miss
+    /// would otherwise split one network's history in two.
     static func arpLookup(ip: String, interface: String) -> String? {
-        if let mac = try? arpQuery(ip: ip) { return mac }
-        _ = try? Shell.run("/sbin/ping", ["-c", "1", "-t", "1", "-n", ip], timeout: 3)
-        return try? arpQuery(ip: ip)
+        for attempt in 0..<3 {
+            if let mac = ((try? arpQuery(ip: ip)) ?? nil) { return mac }
+            guard attempt < 2 else { break }
+            _ = try? Shell.run("/sbin/ping", ["-c", "1", "-t", "1", "-n", ip], timeout: 3)
+        }
+        return nil
     }
 
     private static func arpQuery(ip: String) throws -> String? {

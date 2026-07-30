@@ -412,6 +412,44 @@ installable without sudo or Xcode.
 - [x] ISC-79: Process names containing spaces are not parsed as connection rows.
 - [x] ISC-80: `resetProcessHistory()` clears attribution while leaving `usage_daily` intact.
 
+**6. A long-running agent leaking one resource per tick**
+
+- **conjectured:** `Shell.run` could rely on `Pipe` releasing its file descriptors
+  when it went out of scope, so no explicit close was needed.
+- **refuted_by:** The freshness reporting added in the same session immediately
+  showed `agent process running` alongside `sampling STALLED — last reading 14m
+  ago`. The log held 14 minutes of identical `could not locate Ibytes/Obytes
+  columns in netstat header: <empty output>`, and `lsof` showed **2 553 open PIPE
+  descriptors** against a launchd `maxfiles` soft limit of 256. The agent had
+  exhausted its descriptors after roughly 90 minutes, could no longer spawn
+  `netstat`, and failed every tick while remaining alive and apparently healthy.
+  After the fix, descriptor count stayed flat at 14 total / 0 pipes across three
+  minutes of normal sampling.
+- **learned:** Two lessons, and the second is the larger one. First, a resource
+  that leaks once per iteration is not a small bug in a process designed to run
+  for weeks — it is a guaranteed failure with a fuse on it, and this one would
+  have silently killed the tool a couple of hours after every install. Second,
+  the defect was found only because observability was added for unrelated
+  reasons: nothing in the ISA's criteria could have caught it, because every
+  criterion was verified against a freshly-started process. Correctness over time
+  is a distinct property from correctness, and it needs its own probe. The
+  `Notifier` escalation on consecutive failures now makes the tool complain
+  instead of dying quietly.
+- **criterion_now:** ISC-81..87 below, including a regression that asserts the
+  descriptor count does not grow across 150 invocations, and probes for the
+  pipe-buffer deadlock and hung-child paths that the same rewrite touches.
+
+### Added criteria (reliability pass)
+
+- [x] ISC-81: `Shell.run` does not grow the open descriptor count across repeated calls.
+- [x] ISC-82: Output exceeding a pipe buffer does not deadlock.
+- [x] ISC-83: A child exceeding its timeout is killed and flagged, not awaited forever.
+- [x] ISC-84: Exit status is propagated.
+- [x] ISC-85: `status`/`doctor`/menu bar report last-sample age and warn when stalled.
+- [x] ISC-86: `doctor` distinguishes agent installed, running, and sampling.
+- [x] ISC-87: A transient ARP miss resolves to the existing network, not a new record.
+- [x] ISC-88: A stale subnet match is not reused for a genuinely different network.
+
 ## Verification
 
 Verified on macOS 26.5.2 (build 25F84), Swift 6.3.3, Command Line Tools only.

@@ -38,6 +38,38 @@ public enum ByteFormat {
     }
 }
 
+/// How fresh the recorded data is.
+///
+/// A tool that exists to prevent surprises must not present a stale number as a
+/// current one. If sampling has stopped, the displayed total is a floor, not a
+/// total, and the user has to be told.
+public enum SampleFreshness {
+    /// Sampling is considered stalled beyond this age. Generous relative to the
+    /// 10s default poll so a momentarily slow tick is not reported as a failure.
+    public static let stalledAfter: TimeInterval = 120
+
+    public enum State: Equatable, Sendable {
+        case neverSampled
+        case fresh(age: TimeInterval)
+        case stalled(age: TimeInterval)
+    }
+
+    public static func state(lastSample: Date?, now: Date = Date()) -> State {
+        guard let lastSample else { return .neverSampled }
+        let age = max(0, now.timeIntervalSince(lastSample))
+        return age > stalledAfter ? .stalled(age: age) : .fresh(age: age)
+    }
+
+    /// Compact human age, e.g. `6s`, `4m`, `3h`, `2d`.
+    public static func ago(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds.rounded())
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m" }
+        if s < 86_400 { return "\(s / 3600)h" }
+        return "\(s / 86_400)d"
+    }
+}
+
 /// Resolves a budget cycle into the day range it currently covers.
 public enum BudgetCycle {
     /// Inclusive local-day range for the cycle containing `now`.
