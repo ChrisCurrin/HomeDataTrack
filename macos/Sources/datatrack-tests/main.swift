@@ -143,20 +143,44 @@ E.suite("byte formatting") {
 
 // MARK: - process attribution
 
+// Real `nettop -x -J interface,bytes_in,bytes_out` output, including the
+// mDNSResponder rows that exposed the awdl0 leak.
+let nettopFixture = """
+,interface,bytes_in,bytes_out,
+launchd.1,,0,0,
+tcp4 127.0.0.1:8021<->*:*,lo0,,,
+apsd.588,,13306,70840,
+tcp4 192.168.2.243:62834<->17.57.146.183:5223,en0,13306,70840,
+mDNSResponder.663,,86532173,30028019,
+udp4 *:65327<->*:*,utun4,0,118,
+udp6 *.5353<->*.*,awdl0,40856648,14019111,
+udp4 *:5353<->*:*,en0,45675525,16008556,
+OneDrive Sync S.98110,,500,100,
+tcp4 192.168.2.243:1234<->1.2.3.4:443,en0,500,100,
+"""
+
+func flow(_ name: String, _ conn: String, _ iface: String, _ inB: UInt64, _ outB: UInt64, pid: Int = 1) -> FlowSample {
+    FlowSample(
+        processKey: "\(name).\(pid)", processName: name, connection: conn,
+        interface: iface, bytesIn: inB, bytesOut: outB
+    )
+}
+
 E.suite("process attribution") {
-    E.test("parses nettop CSV including the leading empty header field") {
-        let output = """
-        ,bytes_in,bytes_out,
-        mDNSResponder.663,85030881,29183216,
-        softwareupdated.4021,4210000000,120000,
-        OneDrive.98080,9695,3054,
-        """
-        let samples = ProcessAttribution.parse(output)
-        E.equal(samples.count, 3, "sample count")
-        guard samples.count == 3 else { return }
-        E.equal(samples[0].name, "mDNSResponder")
-        E.equal(samples[0].key, "mDNSResponder.663")
-        E.equal(samples[1].bytesIn, 4_210_000_000, "wide value")
+    E.test("parses per-flow rows and attaches them to the owning process") {
+        let flows = ProcessAttribution.parse(nettopFixture)
+        E.equal(flows.count, 5, "flow count (rows without interface or bytes dropped)")
+        let mdns = flows.filter { $0.processName == "mDNSResponder" }
+        E.equal(mdns.count, 3, "mDNSResponder flows")
+        E.equal(mdns.first(where: { $0.interface == "en0" })?.bytesIn, 45_675_525, "en0 leg")
+        E.equal(mdns.first(where: { $0.interface == "awdl0" })?.bytesIn, 40_856_648, "awdl0 leg")
+    }
+
+    E.test("process names containing spaces are not mistaken for connection rows") {
+        // "OneDrive Sync S" has spaces; a space-based discriminator would treat it
+        // as a connection and silently drop the process.
+        let flows = ProcessAttribution.parse(nettopFixture)
+        E.expect(flows.contains { $0.processName == "OneDrive Sync S" }, "OneDrive Sync S present")
     }
 
     E.test("strips the pid but keeps names that legitimately end in digits") {
@@ -165,45 +189,107 @@ E.suite("process attribution") {
         E.equal(ProcessAttribution.stripPID("noPIDHere"), "noPIDHere")
     }
 
-    E.test("does not backdate traffic from a process seen for the first time") {
-        // A process already holding 4 GB when first seen accrued that before we
-        // were watching; counting it now would blame the wrong network.
-        let current = [ProcessSample(key: "softwareupdated.1", name: "softwareupdated", bytesIn: 4_000_000_000, bytesOut: 1000)]
-        E.expect(ProcessAttribution.deltas(previous: [:], current: current).isEmpty, "first sighting must contribute nothing")
+    E.test("counts only flows on the accounting interface") {
+        // The awdl0 leg is AirDrop/Continuity on a separate interface that the
+        // en0 byte counters never include. Counting it made one process appear
+        // to exceed the machine's entire total.
+        let flows = ProcessAttribution.parse(nettopFixture)
+        let baselines: [String: MonotonicCounter.Reading] = Dictionary(
+            uniqueKeysWithValues: flows.map { ($0.key, MonotonicCounter.Reading(bytesIn: 0, bytesOut: 0)) }
+        )
+        let deltas = ProcessAttribution.deltas(previous: baselines, current: flows, interface: "en0", isFirstSample: false)
+        guard let mdns = deltas.first(where: { $0.process == "mDNSResponder" }) else {
+            E.record("expected mDNSResponder"); return
+        }
+        E.equal(mdns.bytesIn, 45_675_525, "en0 only, awdl0 excluded")
     }
 
-    E.test("differences against the previous reading") {
-        let previous = ["a.1": (bytesIn: UInt64(100), bytesOut: UInt64(50))]
-        let current = [ProcessSample(key: "a.1", name: "a", bytesIn: 400, bytesOut: 90)]
-        let deltas = ProcessAttribution.deltas(previous: previous, current: current)
-        E.equal(deltas.count, 1, "one process")
-        guard let first = deltas.first else { return }
+    E.test("the very first sample baselines rather than counting") {
+        // mDNSResponder's *:5353 socket has been open since boot. Counting it on
+        // the first sample dumps hours of history into one interval.
+        let flows = [flow("mDNSResponder", "udp4 *:5353<->*:*", "en0", 45_675_525, 16_008_556)]
+        E.expect(
+            ProcessAttribution.deltas(previous: [:], current: flows, interface: "en0", isFirstSample: true).isEmpty,
+            "first sample records nothing"
+        )
+    }
+
+    E.test("a newly-opened socket counts its full total") {
+        // A socket that did not exist last sample transferred everything it holds
+        // during this interval, so the full value is correct here.
+        let flows = [flow("curl", "tcp4 10.0.0.2:5000<->1.2.3.4:443", "en0", 5_000, 900)]
+        guard let first = ProcessAttribution.deltas(previous: [:], current: flows, interface: "en0", isFirstSample: false).first else {
+            E.record("expected a delta"); return
+        }
+        E.equal(first.bytesIn, 5_000)
+        E.equal(first.bytesOut, 900)
+    }
+
+    E.test("differences an established flow against its baseline") {
+        let f = flow("a", "tcp4 x<->y", "en0", 400, 90)
+        let previous = [f.key: MonotonicCounter.Reading(bytesIn: 100, bytesOut: 50)]
+        guard let first = ProcessAttribution.deltas(previous: previous, current: [f], interface: "en0", isFirstSample: false).first else {
+            E.record("expected a delta"); return
+        }
         E.equal(first.bytesIn, 300)
         E.equal(first.bytesOut, 40)
     }
 
-    E.test("treats a backwards counter as a restarted process, not negative traffic") {
-        let previous = ["a.1": (bytesIn: UInt64(9_000), bytesOut: UInt64(9_000))]
-        let current = [ProcessSample(key: "a.1", name: "a", bytesIn: 120, bytesOut: 30)]
-        guard let first = ProcessAttribution.deltas(previous: previous, current: current).first else {
-            E.record("expected a delta"); return
-        }
-        E.equal(first.bytesIn, 120)
-        E.equal(first.bytesOut, 30)
+    E.test("REGRESSION: a dip must not re-add the whole cumulative counter") {
+        // The original defect. `deltas` used `sample.bytesIn` on any decrease, so
+        // a few bytes of jitter injected the process's entire lifetime total.
+        // Observed live: mDNSResponder credited with 119.9 MB outbound on a day
+        // it had sent 29.9 MB since boot — 4.01x, one injection per dip.
+        let f = flow("mDNSResponder", "udp4 *:5353<->*:*", "en0", 29_864_910, 29_864_910)
+        let previous = [f.key: MonotonicCounter.Reading(bytesIn: 29_864_915, bytesOut: 29_864_915)]
+        let deltas = ProcessAttribution.deltas(previous: previous, current: [f], interface: "en0", isFirstSample: false)
+        E.expect(deltas.isEmpty, "a 5-byte dip must yield nothing, not 29.9 MB")
     }
 
-    E.test("aggregates several pids of the same program") {
-        let previous = [
-            "chrome.1": (bytesIn: UInt64(0), bytesOut: UInt64(0)),
-            "chrome.2": (bytesIn: UInt64(0), bytesOut: UInt64(0)),
+    E.test("aggregates several flows and pids of the same program") {
+        let flows = [
+            flow("chrome", "tcp4 a<->b", "en0", 100, 10, pid: 1),
+            flow("chrome", "tcp4 c<->d", "en0", 200, 20, pid: 2),
         ]
-        let current = [
-            ProcessSample(key: "chrome.1", name: "chrome", bytesIn: 100, bytesOut: 10),
-            ProcessSample(key: "chrome.2", name: "chrome", bytesIn: 200, bytesOut: 20),
-        ]
-        let deltas = ProcessAttribution.deltas(previous: previous, current: current)
+        let previous = Dictionary(uniqueKeysWithValues: flows.map {
+            ($0.key, MonotonicCounter.Reading(bytesIn: 0, bytesOut: 0))
+        })
+        let deltas = ProcessAttribution.deltas(previous: previous, current: flows, interface: "en0", isFirstSample: false)
         E.equal(deltas.count, 1, "aggregated to one row")
         E.equal(deltas.first?.bytesIn, 300)
+    }
+}
+
+E.suite("monotonic counter (shared rule)") {
+    func reading(_ i: UInt64, _ o: UInt64) -> MonotonicCounter.Reading {
+        MonotonicCounter.Reading(bytesIn: i, bytesOut: o)
+    }
+
+    E.test("no previous reading is a baseline") {
+        E.equal(MonotonicCounter.resolve(previous: nil, current: reading(1, 2)), .baseline)
+    }
+
+    E.test("an advance yields the difference") {
+        E.equal(MonotonicCounter.resolve(previous: reading(100, 50), current: reading(400, 90)),
+                .delta(bytesIn: 300, bytesOut: 40))
+    }
+
+    E.test("any decrease is a reset regardless of magnitude") {
+        // There is no size of decrease at which re-adding a cumulative total
+        // becomes the right answer, so magnitude is deliberately not consulted.
+        E.equal(MonotonicCounter.resolve(previous: reading(1_000, 1_000), current: reading(999, 1_000)), .reset)
+        E.equal(MonotonicCounter.resolve(previous: reading(1_000, 1_000), current: reading(1_000, 999)), .reset)
+        E.equal(MonotonicCounter.resolve(previous: reading(9_000_000, 9_000_000), current: reading(0, 0)), .reset)
+    }
+
+    E.test("the interface path and the process path share one rule") {
+        // Regression guard on the root cause: these two used to diverge.
+        let viaSampler = Sampler.resolveDelta(
+            baseline: (bytesIn: 1_000, bytesOut: 1_000),
+            current: InterfaceCounter(name: "en0", bytesIn: 999, bytesOut: 1_000)
+        )
+        let viaShared = MonotonicCounter.resolve(previous: reading(1_000, 1_000), current: reading(999, 1_000))
+        E.equal(viaSampler, viaShared, "same input must give same outcome")
     }
 }
 
@@ -383,6 +469,33 @@ E.suite("store") {
         E.equal(baseline.bytesIn, 69_656_550_566)
         E.equal(baseline.bytesOut, 22_368_458_679)
         E.equal(baseline.networkID, id)
+    }
+
+    E.test("an empty baseline table reports as the first sample") {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        E.expect(try store.processStateIsEmpty(), "fresh store is first sample")
+        try store.setProcessBaseline(key: "a.1|en0|tcp4 x<->y", bytesIn: 1, bytesOut: 1)
+        E.expect(!(try store.processStateIsEmpty()), "no longer first sample")
+    }
+
+    E.test("resetting process history keeps network totals") {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let id = try store.upsertNetwork(identity())
+        let key = Store.dayKey(Date())
+        try store.recordDelta(networkID: id, bytesIn: 5_000, bytesOut: 1_000)
+        try store.recordProcessDeltas(networkID: id, deltas: [
+            ProcessUsage(process: "mDNSResponder", bytesIn: 999_000_000, bytesOut: 0),
+        ])
+        try store.setProcessBaseline(key: "a.1|en0|tcp4 x<->y", bytesIn: 1, bytesOut: 1)
+
+        try store.resetProcessHistory()
+
+        E.expect(try store.topProcesses(networkID: id, fromDay: key, toDay: key).isEmpty, "process history cleared")
+        E.expect(try store.processStateIsEmpty(), "baselines cleared")
+        // The interface ledger is a separate, trustworthy source and must survive.
+        E.equal(try store.usage(networkID: id, fromDay: key, toDay: key).bytesIn, 5_000, "network totals intact")
     }
 
     E.test("process usage aggregates and ranks") {

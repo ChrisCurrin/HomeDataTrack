@@ -75,10 +75,11 @@ datatrack doctor                 # what this Mac will and will not disclose
 datatrack status                 # current network, today, budget
 datatrack networks               # every network seen, with lifetime totals
 datatrack history 3 --days 30    # daily breakdown for network 3
-datatrack top --days 7           # what used the data
+datatrack top --days 7           # which processes used the data
 datatrack name current "iPhone Hotspot"
 datatrack budget set current 5GB --cycle monthly --start-day 15
 datatrack meter current on
+datatrack reset-processes        # discard per-process history, keep network totals
 ```
 
 Start with `datatrack doctor`. Privacy gating varies by macOS version and by how
@@ -147,10 +148,20 @@ tell you if the column mapping ever drifts on a future macOS.
   just attributed to the network active when sampling resumes.
 - **Interface totals include everything** on that link: VPN tunnels ride over
   `en0`, so they are counted once, correctly, and not double-counted.
-- **Process attribution is sampled**, not exhaustive. It runs once a minute, and
-  a process that starts and dies between samples is missed. Per-process numbers
-  will not sum exactly to the interface total; treat them as "who is responsible",
-  not as a second ledger.
+- **Process attribution is sampled and is not a second ledger.** It runs once a
+  minute, so a process that opens and closes a socket between samples is missed.
+  It is a ranking of who is responsible, not an accounting of the total, and it
+  will not sum to the network figure. Three reasons it cannot:
+  - **Multicast is counted per recipient.** One mDNS frame arrives once on the
+    wire but is delivered to every subscribed socket, so it is legitimately
+    charged to several processes. `mDNSResponder` absorbs most Bonjour chatter and
+    will often look large for this reason alone.
+  - **Sampling gaps.** A socket's final partial interval is lost when it closes.
+  - **The first sample only establishes baselines**, so attribution starts one
+    interval after the network total does.
+
+  The network total itself is unaffected by all of this — it comes from `netstat`,
+  and budgets and alerts are computed from it, not from process attribution.
 - **This measures, it does not enforce.** It will not block traffic. To actually
   stop macOS from downloading updates over a hotspot, turn on **Low Data Mode**
   for that network (System Settings → Wi-Fi → Details → Low Data Mode). When it

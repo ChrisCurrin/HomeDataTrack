@@ -16,6 +16,7 @@ USAGE
   datatrack meter <network> on|off        Mark a network as metered
   datatrack budget set <network> <size> [--cycle monthly|rolling30|none] [--start-day N]
   datatrack budget clear <network>
+  datatrack reset-processes              Discard per-process history (keeps network totals)
   datatrack once                         Take one sample and print the result
   datatrack watch [--interval S]         Run the sampler in the foreground
   datatrack doctor                       Diagnose what this Mac will and will not tell us
@@ -127,7 +128,7 @@ func commandStatus(store: Store) throws {
     let top = try store.topProcesses(networkID: id, fromDay: today, toDay: today, limit: 5)
     if !top.isEmpty {
         print("")
-        print("Top processes today")
+        print("Top talkers today                     (sampled; will not sum to the total)")
         for p in top {
             print("  \(pad(p.process, 26)) \(padLeft(ByteFormat.string(p.total), 10))")
         }
@@ -183,6 +184,9 @@ func commandTop(store: Store) throws {
     for p in top {
         print("  \(pad(p.process, 28)) \(padLeft(ByteFormat.string(p.total), 10))   ↓\(ByteFormat.string(p.bytesIn)) ↑\(ByteFormat.string(p.bytesOut))")
     }
+    print("")
+    print("  Sampled once a minute, so these will not sum to the network total.")
+    print("  Multicast is delivered to several processes and counted for each.")
 }
 
 func commandName(store: Store) throws {
@@ -232,6 +236,12 @@ func commandBudget(store: Store) throws {
     default:
         throw CLIError("unknown budget subcommand '\(sub)'")
     }
+}
+
+func commandResetProcesses(store: Store) throws {
+    try store.resetProcessHistory()
+    print("Per-process history cleared. Network totals are untouched.")
+    print("Attribution restarts from the next sample; the first one only establishes baselines.")
 }
 
 func commandOnce(store: Store) throws {
@@ -347,6 +357,7 @@ do {
     case "name": try commandName(store: store)
     case "meter": try commandMeter(store: store)
     case "budget": try commandBudget(store: store)
+    case "reset-processes": try commandResetProcesses(store: store)
     case "once": try commandOnce(store: store)
     case "watch", "daemon": try commandWatch(store: store)
     case "doctor": try commandDoctor(store: store)

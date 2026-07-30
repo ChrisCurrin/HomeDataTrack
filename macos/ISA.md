@@ -371,6 +371,47 @@ installable without sudo or Xcode.
 - **criterion_now:** ISC-62 rewritten against `swift run datatrack-tests`, which
   reports both test names and a total assertion count.
 
+**5. One rule, implemented twice**
+
+- **conjectured:** The reset rule for interface counters and the reset rule for
+  per-process counters are similar enough to write separately. The interface path
+  discarded the interval on a decrease; the process path used
+  `sample.bytesIn >= prev.bytesIn ? sample.bytesIn - prev.bytesIn : sample.bytesIn`,
+  adding the whole cumulative counter on a decrease.
+- **refuted_by:** The principal noticed `mDNSResponder` reported at 146 MB inside a
+  62 MB daily total. Querying the live database: recorded outbound for
+  `mDNSResponder` was 119 880 319 against a lifetime counter of 29 864 915 —
+  a ratio of 4.01, i.e. the full cumulative total re-injected on four separate
+  sampling dips. Inbound was 1.006x, counted correctly. A second, independent
+  defect compounded it: `nettop -t wifi` does not scope byte totals to the
+  accounting interface (measured identical to unfiltered, 85.8 MB), and the
+  per-flow breakdown showed 40 856 648 bytes of it on `awdl0` — AirDrop and
+  Continuity on a virtual interface the `en0` counters never include.
+- **learned:** Duplicating a rule duplicates the *opportunity* to get it wrong,
+  and the copy that is harder to verify is the one that will be wrong. Worse, the
+  two failure modes were opposites — the interface path erred toward losing data,
+  the process path toward inventing it — so no single review of either file in
+  isolation would have flagged the inconsistency. The fix is not "correct the
+  second copy" but "have one copy": `MonotonicCounter` is now the only place a
+  byte counter becomes a delta, and a test asserts both call sites agree on
+  identical input. Separately, per-*process* totals are not monotonic counters at
+  all — they fall whenever a socket closes — so attribution is now keyed per
+  *flow*, which genuinely is monotonic for its lifetime.
+- **criterion_now:** ISC-51 rewritten as an explicit regression (a 5-byte dip must
+  yield nothing, not 29.9 MB), plus ISC-74..80 below covering the shared rule, the
+  interface filter, the first-sample baseline pass, and space-containing process
+  names.
+
+### Added criteria (post-merge fix)
+
+- [x] ISC-74: A decrease of any magnitude yields no delta, never the cumulative total.
+- [x] ISC-75: `Sampler.resolveDelta` and `MonotonicCounter.resolve` agree on identical input.
+- [x] ISC-76: Only flows on the accounting interface are attributed; `awdl0` is excluded.
+- [x] ISC-77: The first process sample establishes baselines and records nothing.
+- [x] ISC-78: A newly-opened socket counts its full total.
+- [x] ISC-79: Process names containing spaces are not parsed as connection rows.
+- [x] ISC-80: `resetProcessHistory()` clears attribution while leaving `usage_daily` intact.
+
 ## Verification
 
 Verified on macOS 26.5.2 (build 25F84), Swift 6.3.3, Command Line Tools only.

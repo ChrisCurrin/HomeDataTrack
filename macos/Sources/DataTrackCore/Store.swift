@@ -386,10 +386,34 @@ public final class Store {
         )
     }
 
-    /// Drops process baselines not refreshed since `before`, so exited processes
-    /// do not accumulate rows forever.
+    /// Drops flow baselines not refreshed since `before`, so closed sockets do
+    /// not accumulate rows forever.
     public func pruneProcessState(before date: Date) throws {
         try run("DELETE FROM process_state WHERE updated < ?", [.text(Self.iso(date))])
+    }
+
+    /// True when no flow baselines exist, i.e. no process sample has been taken.
+    ///
+    /// The first sample must baseline rather than count: sockets open since boot
+    /// would otherwise contribute their entire history to one interval.
+    public func processStateIsEmpty() throws -> Bool {
+        (try scalarInt("SELECT COUNT(*) FROM process_state", []) ?? 0) == 0
+    }
+
+    /// Discards all per-process history and flow baselines.
+    ///
+    /// Interface totals in `usage_daily` are untouched — those come from netstat
+    /// and were never affected by the attribution defects this clears up after.
+    public func resetProcessHistory() throws {
+        try exec("BEGIN IMMEDIATE;")
+        do {
+            try run("DELETE FROM process_daily", [])
+            try run("DELETE FROM process_state", [])
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
     }
 
     // MARK: - Budgets

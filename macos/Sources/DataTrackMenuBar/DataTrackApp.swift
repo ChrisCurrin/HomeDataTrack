@@ -280,7 +280,10 @@ struct MenuContent: View {
 
     private var processSection: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("What used it today").font(.caption).foregroundStyle(.secondary)
+            // Not "what used it all", deliberately: these are sampled once a
+            // minute and multicast is counted for every process that receives it,
+            // so the column does not sum to the total above.
+            Text("Top talkers today").font(.caption).foregroundStyle(.secondary)
             ForEach(model.topProcesses, id: \.process) { process in
                 HStack {
                     Text(process.process).font(.caption).lineLimit(1)
@@ -288,6 +291,8 @@ struct MenuContent: View {
                     Text(ByteFormat.string(process.total)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
+            Text("Sampled — does not sum to the total above.")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
     }
 

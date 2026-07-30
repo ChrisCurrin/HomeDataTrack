@@ -55,28 +55,21 @@ public struct TickResult: Sendable {
 ///    metered hotspot would immediately inherit the tail of the previous
 ///    network's traffic.
 public final class Sampler {
-    /// What one counter reading means relative to the previous one.
-    public enum CounterDelta: Equatable, Sendable {
-        /// No previous reading; store this one and record nothing.
-        case baseline
-        /// Counter moved backwards — reboot or interface teardown.
-        case reset
-        case delta(bytesIn: UInt64, bytesOut: UInt64)
-    }
+    public typealias CounterDelta = MonotonicCounter.Outcome
 
     /// Decides what a counter reading means, given the previous one.
     ///
-    /// Pure, and deliberately so: an underflow here would invent terabytes of
-    /// phantom usage and fire a budget alarm for traffic that never happened.
+    /// Delegates to `MonotonicCounter` so the interface path and the per-process
+    /// path cannot drift apart again — they did once, and the process side
+    /// fabricated traffic for weeks' worth of samples as a result.
     public static func resolveDelta(
         baseline: (bytesIn: UInt64, bytesOut: UInt64)?,
         current: InterfaceCounter
     ) -> CounterDelta {
-        guard let baseline else { return .baseline }
-        // Either direction going backwards means the counter restarted; treating
-        // them independently would let one axis underflow.
-        if current.bytesIn < baseline.bytesIn || current.bytesOut < baseline.bytesOut { return .reset }
-        return .delta(bytesIn: current.bytesIn - baseline.bytesIn, bytesOut: current.bytesOut - baseline.bytesOut)
+        MonotonicCounter.resolve(
+            previous: baseline.map { MonotonicCounter.Reading(bytesIn: $0.bytesIn, bytesOut: $0.bytesOut) },
+            current: MonotonicCounter.Reading(bytesIn: current.bytesIn, bytesOut: current.bytesOut)
+        )
     }
 
     private let store: Store
@@ -139,8 +132,9 @@ public final class Sampler {
 
         if config.attributeProcesses, shouldSampleProcesses(now: now) {
             // Process deltas cover the same interval, so they follow the same
-            // attribution decision as the interface delta.
-            try attributeProcesses(to: attributedID, now: now)
+            // attribution decision as the interface delta, and are scoped to the
+            // same interface the delta was measured on.
+            try attributeProcesses(to: attributedID, interface: identity.interface, now: now)
             lastProcessSampleAt = now
         }
 
@@ -159,25 +153,36 @@ public final class Sampler {
         return now.timeIntervalSince(last) >= config.processInterval
     }
 
-    private func attributeProcesses(to networkID: Int64, now: Date) throws {
-        let samples = try ProcessAttribution.sample()
-        guard !samples.isEmpty else { return }
+    private func attributeProcesses(to networkID: Int64, interface: String, now: Date) throws {
+        let flows = try ProcessAttribution.sample()
+        guard !flows.isEmpty else { return }
 
-        var previous: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
-        for sample in samples {
-            if let baseline = try store.processBaseline(key: sample.key) {
-                previous[sample.key] = baseline
+        // An empty baseline table means this is the first sample ever taken.
+        // Long-lived sockets (mDNSResponder's *:5353 has been open since boot)
+        // must be baselined rather than counted, or their entire history lands in
+        // a single interval.
+        let isFirstSample = try store.processStateIsEmpty()
+
+        let relevant = flows.filter { $0.interface == interface }
+        var previous: [String: MonotonicCounter.Reading] = [:]
+        for flow in relevant {
+            if let baseline = try store.processBaseline(key: flow.key) {
+                previous[flow.key] = MonotonicCounter.Reading(bytesIn: baseline.bytesIn, bytesOut: baseline.bytesOut)
             }
         }
-        let deltas = ProcessAttribution.deltas(previous: previous, current: samples)
+
+        let deltas = ProcessAttribution.deltas(
+            previous: previous, current: relevant, interface: interface, isFirstSample: isFirstSample
+        )
         try store.recordProcessDeltas(networkID: networkID, deltas: deltas, at: now)
 
-        for sample in samples {
-            try store.setProcessBaseline(key: sample.key, bytesIn: sample.bytesIn, bytesOut: sample.bytesOut, now: now)
+        for flow in relevant {
+            try store.setProcessBaseline(key: flow.key, bytesIn: flow.bytesIn, bytesOut: flow.bytesOut, now: now)
         }
-        // Processes that exited stop being refreshed; drop their stale baselines
-        // so pid reuse cannot difference against a dead process.
-        try store.pruneProcessState(before: now.addingTimeInterval(-config.processInterval * 10))
+        // Only genuinely dead flows are pruned. The window is long because a
+        // live long-lived socket that got pruned would be re-counted in full on
+        // its next sighting — the very failure this rewrite removes.
+        try store.pruneProcessState(before: now.addingTimeInterval(-86_400))
     }
 
     /// Alerts once per threshold per cycle when a budgeted network fills up.
