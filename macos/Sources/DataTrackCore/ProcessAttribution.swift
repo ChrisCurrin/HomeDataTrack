@@ -81,12 +81,12 @@ public enum ProcessAttribution {
     /// udp6 *.5353<->*.*,awdl0,40856648,14019111,
     /// udp4 *:5353<->*:*,en0,45675525,16008556,
     /// apsd.588,,13306,70840,
-    /// tcp4 192.168.2.243:62834<->17.57.146.183:5223,en0,13306,70840,
+    /// tcp4 192.0.2.10:62834<->198.51.100.7:5223,en0,13306,70840,
     /// ```
     /// Header rows are distinguished by their first field *not* starting with a
     /// protocol token. Matching on protocol rather than on "contains a space" is
-    /// deliberate: plenty of process names contain spaces ("OneDrive Sync S",
-    /// "Code Helper"), so a space-based test would misclassify them.
+    /// deliberate: plenty of process names contain spaces ("Code Helper",
+    /// "Cloud Sync Hel"), so a space-based test would misclassify them.
     public static func parse(_ output: String) -> [FlowSample] {
         let protocols = ["tcp4 ", "tcp6 ", "udp4 ", "udp6 "]
         var flows: [FlowSample] = []

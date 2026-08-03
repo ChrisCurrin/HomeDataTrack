@@ -76,7 +76,7 @@ public struct NetworkIdentity: Sendable {
     /// Whether an SSID reads like a phone sharing its connection.
     ///
     /// Device names are matched as whole tokens rather than substrings. A plain
-    /// `contains` check is too eager: a home network called "Pixelated" contains
+    /// `contains` check is too eager: a network called "PixelPerfect" contains
     /// "pixel", and mislabelling an unmetered network as metered is the more
     /// annoying error — it is the one that produces budget warnings the user
     /// never asked for. Phrases like "hotspot" carry their own meaning wherever
@@ -169,7 +169,7 @@ public enum NetworkIdentityReader {
     }
 
     /// Extracts the MAC from `arp -n` output. Exposed for unit testing.
-    /// Example: `? (10.0.0.1) at da:f7:ed:85:e7:d5 on en0 ifscope [ethernet]`
+    /// Example: `? (192.0.2.1) at 02:00:00:00:00:fe on en0 ifscope [ethernet]`
     public static func parseARP(_ output: String) -> String? {
         for line in output.split(separator: "\n") {
             let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)

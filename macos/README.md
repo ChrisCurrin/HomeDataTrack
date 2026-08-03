@@ -14,16 +14,17 @@ $ datatrack status
 Current network
   Name      iPhone Hotspot   ⚠︎ metered
   Interface en0 (macOS marks this link constrained)
-  Gateway   172.20.10.1 · 9a:1f:04:c2:88:e1
-  Id        3   (gw:9a:1f:04:c2:88:e1)
+  Gateway   172.20.10.1 · 02:00:00:00:00:fe
+  Id        3   (gw:02:00:00:00:00:fe)
 
 Today
   ↓ 1.84 GB   ↑ 122 MB   total 1.96 GB
+  last sampled 6s ago
 
   Budget    ████████████░░░░░░░░░░░░ 49%
             1.96 GB of 4.00 GB (2.04 GB left) · monthly cycle from 2026-07-15
 
-Top processes today
+Top talkers today                     (sampled; will not sum to the total)
   softwareupdated              1.61 GB
   Safari                        212 MB
   nsurlsessiond                  94 MB

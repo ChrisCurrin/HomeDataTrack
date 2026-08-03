@@ -11,10 +11,10 @@ lo0        16384 <Link#1>                       5621409     0 5571821451  562140
 lo0        16384 127           localhost        5621409     - 5571821451  5621409     - 5571821451     -
 lo0        16384 localhost   ::1                5621409     - 5571821451  5621409     - 5571821451     -
 gif0*      1280  <Link#2>                             0     0          0        0     0          0     0
-en0        1500  <Link#11>   8e:7d:70:2c:e6:f1 63515070     0 69656550566 36662694     0 22368458679     0
-en0        1500  l-a0021.loc fe80:b::3d:52fc:f 63515070     - 69656550566 36662694     - 22368458679     -
-en0        1500  10.139.153/24 10.139.153.126  63515070     - 69656550566 36662694     - 22368458679     -
-awdl0      1500  <Link#13>   66:00:91:ad:22:5b     1697     0     628317     1826     0     534040     0
+en0        1500  <Link#11>   02:00:00:00:00:01 63515070     0 69656550566 36662694     0 22368458679     0
+en0        1500  host.local  fe80:b::3d:52fc:f 63515070     - 69656550566 36662694     - 22368458679     -
+en0        1500  192.0.2/24  192.0.2.10       63515070     - 69656550566 36662694     - 22368458679     -
+awdl0      1500  <Link#13>   02:00:00:00:00:02     1697     0     628317     1826     0     534040     0
 """
 
 func makeStore() throws -> (Store, URL) {
@@ -80,7 +80,7 @@ E.suite("netstat counter parsing") {
         // means the numbers still land correctly.
         let output = """
         Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll Drop
-        en0        1500  <Link#11>   8e:7d:70:2c:e6:f1 63515070     0 69656550566 36662694     0 22368458679     0    0
+        en0        1500  <Link#11>   02:00:00:00:00:01 63515070     0 69656550566 36662694     0 22368458679     0    0
         """
         let counters = try InterfaceCounters.parse(netstatOutput: output)
         E.equal(counters["en0"]?.bytesIn, 69_656_550_566, "in with extra column")
@@ -92,8 +92,8 @@ E.suite("netstat counter parsing") {
 
 E.suite("ARP gateway identity") {
     E.test("extracts the gateway MAC") {
-        let output = "? (10.139.153.111) at da:f7:ed:85:e7:d5 on en0 ifscope [ethernet]"
-        E.equal(NetworkIdentityReader.parseARP(output), "da:f7:ed:85:e7:d5")
+        let output = "? (192.0.2.1) at 02:00:00:00:00:fe on en0 ifscope [ethernet]"
+        E.equal(NetworkIdentityReader.parseARP(output), "02:00:00:00:00:fe")
     }
 
     E.test("zero-pads so one router cannot become two networks") {
@@ -150,13 +150,13 @@ let nettopFixture = """
 launchd.1,,0,0,
 tcp4 127.0.0.1:8021<->*:*,lo0,,,
 apsd.588,,13306,70840,
-tcp4 192.168.2.243:62834<->17.57.146.183:5223,en0,13306,70840,
+tcp4 192.0.2.10:62834<->198.51.100.7:5223,en0,13306,70840,
 mDNSResponder.663,,86532173,30028019,
 udp4 *:65327<->*:*,utun4,0,118,
 udp6 *.5353<->*.*,awdl0,40856648,14019111,
 udp4 *:5353<->*:*,en0,45675525,16008556,
-OneDrive Sync S.98110,,500,100,
-tcp4 192.168.2.243:1234<->1.2.3.4:443,en0,500,100,
+Cloud Sync Hel.98110,,500,100,
+tcp4 192.0.2.10:1234<->198.51.100.9:443,en0,500,100,
 """
 
 func flow(_ name: String, _ conn: String, _ iface: String, _ inB: UInt64, _ outB: UInt64, pid: Int = 1) -> FlowSample {
@@ -177,10 +177,11 @@ E.suite("process attribution") {
     }
 
     E.test("process names containing spaces are not mistaken for connection rows") {
-        // "OneDrive Sync S" has spaces; a space-based discriminator would treat it
-        // as a connection and silently drop the process.
+        // "Cloud Sync Hel" has spaces; a space-based discriminator would treat it
+        // as a connection row and silently drop the process. nettop truncates
+        // long names, so partial words like this are normal.
         let flows = ProcessAttribution.parse(nettopFixture)
-        E.expect(flows.contains { $0.processName == "OneDrive Sync S" }, "OneDrive Sync S present")
+        E.expect(flows.contains { $0.processName == "Cloud Sync Hel" }, "space-containing name present")
     }
 
     E.test("strips the pid but keeps names that legitimately end in digits") {
@@ -357,10 +358,10 @@ E.suite("network identity") {
     }
 
     E.test("an ordinary name merely containing a device name is not metered") {
-        // Found on a real network called "Pixelated": a substring match on
-        // "pixel" flagged it as a phone hotspot and would have produced budget
-        // warnings the user never asked for.
-        E.expect(!NetworkIdentity.ssidSuggestsTethering("Pixelated"), "Pixelated")
+        // Ordinary network names do contain device names as substrings, and a
+        // naive `contains` match flags them as phone hotspots, producing budget
+        // warnings nobody asked for.
+        E.expect(!NetworkIdentity.ssidSuggestsTethering("PixelPerfect"), "PixelPerfect")
         E.expect(!NetworkIdentity.ssidSuggestsTethering("Androidian Cafe"), "Androidian Cafe")
         E.expect(!NetworkIdentity.ssidSuggestsTethering("Galaxybrain"), "Galaxybrain")
         // But the real device names still match as whole tokens.
